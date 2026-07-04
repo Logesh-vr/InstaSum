@@ -2,19 +2,22 @@
 //  Apify integration — Video transcript extraction
 //
 //  Actor used:
-//    scrapier/tiktok-instagram-facebook-youtube-shorts-transcriber
-//  Supports: Instagram Reels, YouTube Shorts, TikTok
+//    tictechid/anoxvanzi-transcriber
+//  Supports: Instagram Reels, YouTube Shorts, TikTok, Facebook
+//
+//  Input:  { urls: [string] }
+//  Output: { status: "success"|"failed", transcript: string (with timestamps), ... }
 //
 //  Apify free tier: $5/month ≈ 165 videos/month
 // ─────────────────────────────────────────────────────────────
 
 const APIFY_API_TOKEN = process.env.APIFY_API_TOKEN!;
-const ACTOR_ID = 'scrapier~tiktok-instagram-facebook-youtube-shorts-transcriber';
+const ACTOR_ID = 'tictechid~anoxvanzi-transcriber';
 const APIFY_BASE = 'https://api.apify.com/v2';
 
 // Max time to wait for Apify to finish (ms)
 const MAX_WAIT_MS = 300_000; // 5 minutes
-const POLL_INTERVAL_MS = 3_000;
+const POLL_INTERVAL_MS = 4_000;
 
 export interface ApifyResult {
   transcript: string;
@@ -38,9 +41,7 @@ export async function transcribeVideo(videoUrl: string): Promise<ApifyResult> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        start_urls: [{ url: videoUrl }],
-        include_timestamps: false,
-        language: 'auto',
+        urls: [videoUrl],
       }),
     }
   );
@@ -83,7 +84,9 @@ export async function transcribeVideo(videoUrl: string): Promise<ApifyResult> {
   }
 
   if (!finished) {
-    throw new Error(`Apify actor run timed out after ${MAX_WAIT_MS / 1000} seconds for URL: ${videoUrl}`);
+    throw new Error(
+      `Apify actor run timed out after ${MAX_WAIT_MS / 1000}s for URL: ${videoUrl}`
+    );
   }
 
   // ── Step 3: Fetch the dataset items ───────────────────────
@@ -107,11 +110,11 @@ export async function transcribeVideo(videoUrl: string): Promise<ApifyResult> {
 
   // Handle explicit errors returned by the actor
   if (item.status === 'failed' && item.error) {
-    const cleanError = item.error
-      .replace(/\u001b\[\d+(;\d+)*m/g, '') // remove ANSI color escape codes
-      .replace(/^ERROR:\s*/i, '') // remove leading "ERROR:"
+    const cleanError = (item.error as string)
+      .replace(/\u001b\[\d+(;\d+)*m/g, '') // strip ANSI color codes
+      .replace(/^ERROR:\s*/i, '')
       .trim();
-    throw new Error(`Apify failed to process video: ${cleanError}`);
+    throw new Error(`Could not transcribe video: ${cleanError}`);
   }
 
   const transcript = extractTranscript(item);
@@ -124,36 +127,50 @@ export async function transcribeVideo(videoUrl: string): Promise<ApifyResult> {
 
   return {
     transcript,
-    videoTitle: item.title || item.videoTitle || undefined,
-    thumbnailUrl: item.thumbnail || item.thumbnailUrl || undefined,
+    videoTitle: (item.title || item.videoTitle) as string | undefined,
+    thumbnailUrl: (item.thumbnail || item.thumbnailUrl) as string | undefined,
   };
 }
 
 // ── Internal helpers ───────────────────────────────────────
 
 interface ApifyDatasetItem {
+  // tictechid~anoxvanzi-transcriber fields
   transcript?: string;
+  status?: string;
+  error?: string;
+  detected_language?: string;
+  durationSec?: number;
+  // Fallback field names from other actors
   text?: string;
   transcription?: string;
   title?: string;
   videoTitle?: string;
   thumbnail?: string;
   thumbnailUrl?: string;
-  status?: string;
-  error?: string;
   [key: string]: unknown;
 }
 
+/**
+ * Extracts and cleans the transcript text from the dataset item.
+ * The tictechid actor returns transcripts with inline timestamps like:
+ *   "[0.40s - 7.28s] Some spoken text here."
+ * We strip those to produce clean readable text.
+ */
 function extractTranscript(item: ApifyDatasetItem): string {
-  // Different actor versions may use different field names
-  // Use unknown type to avoid TypeScript narrowing issue
   const raw: unknown =
     (item.transcript as unknown) ??
     (item.text as unknown) ??
     (item.transcription as unknown) ??
     '';
 
-  if (typeof raw === 'string') return raw.trim();
+  if (typeof raw === 'string') {
+    // Strip inline timestamps: [0.40s - 7.28s] → just keep spoken text
+    return raw
+      .replace(/\[\d+\.?\d*s\s*-\s*\d+\.?\d*s\]\s*/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
 
   // Some actors return transcript as array of segments
   if (Array.isArray(raw)) {

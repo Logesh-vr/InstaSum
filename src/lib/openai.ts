@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────
 //  Google Gemini intelligence layer
-//  Model: gemini-2.0-flash — FREE tier, 1,500 req/day, no card needed
+//  Model: gemini-2.5-flash — FREE tier, 1,500 req/day, no card needed
 //  Get key at: https://ai.google.dev (takes 30 seconds)
 // ─────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ export async function analyzeTranscript(
   existingCategories: string[]
 ): Promise<AnalysisResult> {
   const client = getClient();
-  const model = client.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const model = client.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
   const categoryContext =
     existingCategories.length > 0
