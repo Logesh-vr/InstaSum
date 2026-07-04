@@ -1,19 +1,23 @@
 // ─────────────────────────────────────────────────────────────
-//  OpenAI intelligence layer
-//  Model: gpt-4o-mini — cheap, fast, structured JSON output
+//  Google Gemini intelligence layer
+//  Model: gemini-2.0-flash — FREE tier, 1,500 req/day, no card needed
+//  Get key at: https://ai.google.dev (takes 30 seconds)
 // ─────────────────────────────────────────────────────────────
 
-import OpenAI from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-// Singleton — reused across requests
-let _client: OpenAI | null = null;
+// Lazy singleton — created on first use
+let _client: GoogleGenerativeAI | null = null;
 
-function getClient(): OpenAI {
+function getClient(): GoogleGenerativeAI {
   if (!_client) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is not set in environment variables.');
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error(
+        'GEMINI_API_KEY is not set. Get a free key at https://ai.google.dev'
+      );
     }
-    _client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    _client = new GoogleGenerativeAI(key);
   }
   return _client;
 }
@@ -25,23 +29,25 @@ export interface AnalysisResult {
 }
 
 /**
- * Analyzes a raw video transcript and returns a structured summary.
+ * Analyzes a raw video transcript using Gemini and returns structured insights.
+ * Drop-in replacement for the OpenAI version — identical function signature.
  *
- * @param transcript      Raw transcript text from Apify
- * @param existingCategories  Array of category names already in the DB
+ * @param transcript         Raw transcript text from Apify
+ * @param existingCategories Array of category names already in the DB
  */
 export async function analyzeTranscript(
   transcript: string,
   existingCategories: string[]
 ): Promise<AnalysisResult> {
   const client = getClient();
+  const model = client.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
   const categoryContext =
     existingCategories.length > 0
       ? `The existing categories in the knowledge base are: ${existingCategories.map((c) => `"${c}"`).join(', ')}. If the video clearly fits one of these, reuse it exactly (same spelling and casing). If it represents a genuinely new topic, create a new 1–2 word category.`
       : `There are no existing categories yet. Create a new concise 1–2 word category for this video.`;
 
-  const systemPrompt = `You are an expert knowledge curator for a personal learning library. You analyze raw transcripts from short-form videos (Instagram Reels, YouTube Shorts, TikTok) and extract structured insights.
+  const prompt = `You are an expert knowledge curator for a personal learning library. You analyze raw transcripts from short-form videos (Instagram Reels, YouTube Shorts, TikTok) and extract structured insights.
 
 ${categoryContext}
 
@@ -51,34 +57,36 @@ Rules:
 - Key takeaways must be 3–6 actionable bullet points.
 - Ignore filler content (calls to action like "follow for more", "like and subscribe", etc.).
 
-Respond ONLY with a valid JSON object matching this exact shape:
+Here is the raw transcript from a short-form video:
+
+---
+${transcript.slice(0, 8000)}
+---
+
+Respond ONLY with a valid JSON object matching this exact shape, no markdown, no backticks:
 {
   "summary": "string",
   "keyTakeaways": ["string", "string", ...],
   "category": "string"
 }`;
 
-  const userMessage = `Here is the raw transcript from a short-form video:\n\n---\n${transcript.slice(0, 8000)}\n---\n\nExtract the insights.`;
+  const result = await model.generateContent(prompt);
+  const raw = result.response.text().trim();
 
-  const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
-    response_format: { type: 'json_object' },
-    temperature: 0.3,
-    max_tokens: 800,
-  });
+  if (!raw) throw new Error('Gemini returned an empty response.');
 
-  const raw = response.choices[0]?.message?.content;
-  if (!raw) throw new Error('OpenAI returned an empty response.');
+  // Strip any markdown code fences Gemini might add despite instructions
+  const cleaned = raw
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
 
   let parsed: AnalysisResult;
   try {
-    parsed = JSON.parse(raw) as AnalysisResult;
+    parsed = JSON.parse(cleaned) as AnalysisResult;
   } catch {
-    throw new Error(`OpenAI response was not valid JSON: ${raw}`);
+    throw new Error(`Gemini response was not valid JSON: ${cleaned}`);
   }
 
   // Validate shape
@@ -87,7 +95,7 @@ Respond ONLY with a valid JSON object matching this exact shape:
     !Array.isArray(parsed.keyTakeaways) ||
     typeof parsed.category !== 'string'
   ) {
-    throw new Error(`OpenAI response has unexpected structure: ${raw}`);
+    throw new Error(`Gemini response has unexpected structure: ${cleaned}`);
   }
 
   return parsed;
